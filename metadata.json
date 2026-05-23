@@ -1,0 +1,8 @@
+{
+  "name": "Learners Pass",
+  "description": "A smart AI-powered student revision assistant for studying notes, generating revision materials, and daily assessments.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
