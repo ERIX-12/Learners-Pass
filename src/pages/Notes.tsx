@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   FileUp, 
@@ -8,7 +8,6 @@ import {
   Loader2, 
   BookMarked, 
   Plus,
-  MoreVertical,
   Search,
   Filter,
   Layers,
@@ -17,11 +16,13 @@ import {
   Settings2,
   ArrowRight,
   Volume2,
-  VolumeX
+  VolumeX,
+  Trash2
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import React from "react";
 import { generateFlashcards } from "@/src/services/api";
+import { useNavigate } from "react-router-dom";
 
 interface Flashcard {
   front: string;
@@ -41,10 +42,15 @@ interface Note {
 }
 
 export default function Notes() {
+  const navigate = useNavigate();
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [showUploadModal, setShowUploadModal] = useState(false);
-  
+  const [analyzedData, setAnalyzedData] = useState<any>(null);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [showFlashcardModal, setShowFlashcardModal] = useState(false);
   const [flashcards, setFlashcards] = useState<Flashcard[]>([]);
@@ -52,10 +58,7 @@ export default function Notes() {
   const [isFlipped, setIsFlipped] = useState(false);
   const [flashcardCount, setFlashcardCount] = useState(5);
   const [activeNoteForFlashcards, setActiveNoteForFlashcards] = useState<Note | null>(null);
-  const [masteredCardsMap, setMasteredCardsMap] = useState<Record<string, number[]>>({
-    "1": [0, 1, 2], // 3 out of 5 default completed
-    "2": [] // 0 out of 5 default
-  });
+  const [masteredCardsMap, setMasteredCardsMap] = useState<Record<string, number[]>>({});
 
   const [speakingNoteId, setSpeakingNoteId] = useState<string | null>(null);
 
@@ -100,27 +103,16 @@ export default function Notes() {
     }
   };
 
-  const [notes, setNotes] = useState<Note[]>([
-    {
-      id: "1",
-      title: "Cell Division & Mitosis",
-      subject: "Biology",
-      topic: "Genetics",
-      createdAt: "2026-05-18",
-      keyPoints: ["Prophase", "Metaphase", "Anaphase", "Telophase"],
-      content: "Mitosis is a type of cell division that results in two daughter cells each having the same number and kind of chromosomes as the parent nucleus, typical of ordinary tissue growth.",
-      labels: ["urgent", "summary"]
-    },
-    {
-      id: "2",
-      title: "Derivatives Basics",
-      subject: "Mathematics",
-      topic: "Calculus",
-      createdAt: "2026-05-15",
-      content: "The derivative of a function of a real variable measures the sensitivity to change of the function value with respect to a change in its argument.",
-      labels: ["handwritten"]
-    }
-  ]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [loadingNotes, setLoadingNotes] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/notes")
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setNotes(Array.isArray(data) ? data : []))
+      .catch(() => setNotes([]))
+      .finally(() => setLoadingNotes(false));
+  }, []);
 
   // Search & Filtering State
   const [searchQuery, setSearchQuery] = useState("");
@@ -131,8 +123,6 @@ export default function Notes() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingNote, setEditingNote] = useState<Note | null>(null);
   const [isConfiguringNewNote, setIsConfiguringNewNote] = useState(false);
-  const [uploadedFileName, setUploadedFileName] = useState("");
-  const [newNoteContent, setNewNoteContent] = useState("");
 
   const [inputTitle, setInputTitle] = useState("");
   const [inputSubject, setInputSubject] = useState("");
@@ -140,33 +130,82 @@ export default function Notes() {
   const [inputLabels, setInputLabels] = useState<string[]>([]);
   const [customLabelInput, setCustomLabelInput] = useState("");
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
+    setUploadedFile(file);
     setIsUploading(true);
-    let progress = 0;
+    setUploadProgress(0);
+    let prog = 0;
     const interval = setInterval(() => {
-      progress += 10;
-      setUploadProgress(progress);
-      if (progress >= 100) {
-        clearInterval(interval);
-        setTimeout(() => {
-          setIsUploading(false);
-          setUploadProgress(0);
-          
-          setUploadedFileName(file.name.split('.')[0]);
-          setNewNoteContent("Sample content extracted from uploaded file: " + file.name + " for study guidance and flashcard synthesis.");
-          
-          setInputTitle(file.name.split('.')[0]);
-          setInputSubject("Biology");
-          setInputTopic("General");
-          setInputLabels([]);
-          setCustomLabelInput("");
-          setIsConfiguringNewNote(true);
-        }, 500);
+      prog = Math.min(prog + 8, 85);
+      setUploadProgress(prog);
+    }, 200);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/notes/analyze", { method: "POST", body: formData });
+      clearInterval(interval);
+      setUploadProgress(100);
+      const data = res.ok ? await res.json() : null;
+      if (data) {
+        setAnalyzedData(data);
+        setInputTitle(data.title || file.name.split(".")[0]);
+        setInputSubject(data.subject || "General");
+        setInputTopic(data.topic || "General");
+      } else {
+        setAnalyzedData({ filePath: null, originalName: file.name, content: "" });
+        setInputTitle(file.name.split(".")[0]);
+        setInputSubject("General");
+        setInputTopic("General");
       }
-    }, 150);
+      setInputLabels([]);
+      setCustomLabelInput("");
+      setTimeout(() => { setIsUploading(false); setUploadProgress(0); setIsConfiguringNewNote(true); }, 400);
+    } catch (err) {
+      clearInterval(interval);
+      setAnalyzedData({ filePath: null, originalName: file.name, content: "" });
+      setInputTitle(file.name.split(".")[0]);
+      setInputSubject("General"); setInputTopic("General"); setInputLabels([]);
+      setTimeout(() => { setIsUploading(false); setUploadProgress(0); setIsConfiguringNewNote(true); }, 400);
+    }
+  };
+
+  const handleSaveNewNote = async () => {
+    if (!inputTitle.trim()) return;
+    setIsSaving(true);
+    try {
+      const payload = {
+        title: inputTitle.trim(),
+        subject: inputSubject.trim() || "General",
+        topic: inputTopic.trim() || "General",
+        labels: inputLabels,
+        createdAt: new Date().toISOString().split("T")[0],
+        content: analyzedData?.content || analyzedData?.contentSummary || "",
+        summary: analyzedData?.contentSummary || "",
+        keyPoints: analyzedData?.keyPoints || [],
+        filePath: analyzedData?.filePath || null,
+        originalName: analyzedData?.originalName || uploadedFile?.name || "",
+      };
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) { const saved = await res.json(); setNotes(prev => [saved, ...prev]); }
+    } catch (e) { console.error(e); }
+    finally { setIsSaving(false); setIsConfiguringNewNote(false); setShowUploadModal(false); setAnalyzedData(null); setUploadedFile(null); }
+  };
+
+  const handleDeleteNote = async (id: string) => {
+    try {
+      const res = await fetch(`/api/notes/${id}`, { method: "DELETE" });
+      if (res.ok) { setNotes(prev => prev.filter(n => n.id !== id)); setDeleteConfirmId(null); }
+    } catch (e) { console.error(e); }
+  };
+
+  const handleRevise = (note: Note) => {
+    navigate(`/tutor?subject=${encodeURIComponent(note.subject)}&topic=${encodeURIComponent(note.topic)}`);
   };
 
   const handleGenerateFlashcards = async (note: Note) => {

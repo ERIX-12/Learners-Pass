@@ -1,10 +1,4 @@
 import { useState } from "react";
-import { 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword,
-  signInWithPopup
-} from "firebase/auth";
-import { auth, googleProvider } from "../firebase/config";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { GraduationCap, Mail, Lock, Chrome, ArrowRight, Loader2 } from "lucide-react";
@@ -23,11 +17,18 @@ export default function Auth() {
     setLoading(true);
     setError("");
     try {
-      if (isLogin) {
-        await signInWithEmailAndPassword(auth, email, password);
-      } else {
-        await createUserWithEmailAndPassword(auth, email, password);
+      const endpoint = isLogin ? "/api/auth/login" : "/api/auth/signup";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Authentication failed");
       }
+      const data = await response.json();
+      localStorage.setItem("token", data.token);
       navigate("/dashboard");
     } catch (err: any) {
       setError(err.message);
@@ -38,7 +39,8 @@ export default function Auth() {
 
   const handleGoogleSignIn = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      // Mock Google sign-in for local development
+      localStorage.setItem("token", "mock-google-token");
       navigate("/dashboard");
     } catch (err: any) {
       setError(err.message);

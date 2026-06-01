@@ -3,25 +3,46 @@ import path from "path";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
-import * as admin from "firebase-admin";
-// @ts-ignore
-import pdf from "pdf-parse/lib/pdf-parse.js";
+
+import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 import dotenv from "dotenv";
+import fs from "fs";
+import officeParser from "officeparser";
+import { registerAuthRoutes } from "./src/backend/authRoutes";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { Low } from "lowdb";
+import { JSONFile } from "lowdb/node";
 
 dotenv.config();
 
-const app = express();
-const PORT = 3000;
-
-// Initialize Firebase Admin (lazy)
-let firebaseApp: admin.app.App | null = null;
-function getFirebaseAdmin() {
-  if (!firebaseApp) {
-    firebaseApp = admin.initializeApp();
-  }
-  return firebaseApp;
+interface DBData {
+  users: any[];
+  notes: any[];
 }
+
+const dbFile = path.resolve(process.cwd(), "db.json");
+const adapter = new JSONFile<DBData>(dbFile);
+const db = new Low<DBData>(adapter, { users: [], notes: [] });
+
+// Initialize DB with defaults if empty
+await db.read();
+if (!db.data) {
+  db.data = { users: [], notes: [] };
+  await db.write();
+} else if (!db.data.notes) {
+  db.data.notes = [];
+  await db.write();
+}
+
+const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3001;
 
 // Initialize GoogleGenAI lazily
 let genAI: GoogleGenAI | null = null;
@@ -44,9 +65,10 @@ function getGenAI() {
 }
 
 app.use(express.json());
+registerAuthRoutes(app);
 
 // Multer for file uploads
-const upload = multer({ storage: multer.memoryBuffer() });
+const upload = multer({ storage: multer.memoryStorage() });
 
 // --- API Routes ---
 
@@ -55,19 +77,41 @@ app.post("/api/notes/analyze", upload.single("file"), async (req: any, res) => {
     const file = req.file;
     if (!file) return res.status(400).json({ error: "No file provided" });
 
+    // Save file to disk
+    const filename = `${Date.now()}-${file.originalname}`;
+    const filePath = path.join(UPLOADS_DIR, filename);
+    await fs.promises.writeFile(filePath, file.buffer);
+
     let textContent = "";
 
     if (file.mimetype === "application/pdf") {
       try {
-        const data = await pdf(file.buffer);
+        const parser = new PDFParse({ data: file.buffer });
+        const data = await parser.getText();
         textContent = data.text;
+        await parser.destroy();
       } catch (err) {
         console.error("PDF Parsing Error:", err);
         textContent = "Failed to parse PDF content. Please try another format or ensure the PDF is not encrypted.";
       }
-    } else if (file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    } else if (
+      file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      file.mimetype === "application/msword"
+    ) {
       const result = await mammoth.extractRawText({ buffer: file.buffer });
       textContent = result.value;
+    } else if (
+      file.mimetype === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+      file.mimetype === "application/vnd.ms-powerpoint" ||
+      file.originalname.endsWith(".pptx") ||
+      file.originalname.endsWith(".ppt")
+    ) {
+      try {
+        textContent = await officeParser.parseOffice(filePath);
+      } catch (err) {
+        console.error("PPTX Parsing Error:", err);
+        textContent = "Failed to parse presentation slides.";
+      }
     } else if (file.mimetype.startsWith("text/")) {
       textContent = file.buffer.toString("utf-8");
     } else if (file.mimetype.startsWith("image/")) {
@@ -112,7 +156,13 @@ app.post("/api/notes/analyze", upload.single("file"), async (req: any, res) => {
       },
     });
 
-    res.json(JSON.parse(analysisResponse.text || "{}"));
+    const analysis = JSON.parse(analysisResponse.text || "{}");
+    analysis.filePath = filePath;
+    analysis.fileName = filename;
+    analysis.originalName = file.originalname;
+    analysis.content = textContent;
+
+    res.json(analysis);
   } catch (error) {
     console.error("Analysis Error:", error);
     res.status(500).json({ error: "Failed to analyze note" });
@@ -275,6 +325,45 @@ app.post("/api/notes/generate-timetable", async (req, res) => {
     res.status(500).json({ error: "Failed to generate study timetable" });
   }
 });
+
+// ─── Notes CRUD ───────────────────────────────────────────────────────────────
+
+app.get("/api/notes", async (_req, res) => {
+  await db.read();
+  res.json(db.data?.notes || []);
+});
+
+app.post("/api/notes", async (req, res) => {
+  await db.read();
+  const note = { ...req.body, id: Date.now().toString() };
+  db.data!.notes.push(note);
+  await db.write();
+  res.json(note);
+});
+
+app.put("/api/notes/:id", async (req, res) => {
+  await db.read();
+  const idx = db.data!.notes.findIndex((n: any) => n.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Note not found" });
+  db.data!.notes[idx] = { ...db.data!.notes[idx], ...req.body };
+  await db.write();
+  res.json(db.data!.notes[idx]);
+});
+
+app.delete("/api/notes/:id", async (req, res) => {
+  await db.read();
+  const note = db.data!.notes.find((n: any) => n.id === req.params.id);
+  if (!note) return res.status(404).json({ error: "Note not found" });
+  // Remove file from disk if it exists
+  if (note.filePath && fs.existsSync(note.filePath)) {
+    fs.unlinkSync(note.filePath);
+  }
+  db.data!.notes = db.data!.notes.filter((n: any) => n.id !== req.params.id);
+  await db.write();
+  res.json({ success: true });
+});
+
+// ─── Tutor Chat ────────────────────────────────────────────────────────────────
 
 app.post("/api/tutor/chat", async (req, res) => {
   try {

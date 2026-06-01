@@ -69,7 +69,13 @@ export default function Sidebar() {
           </div>
         </div>
 
-        <button className="flex items-center gap-3 px-4 py-3 w-full text-slate-500 hover:text-red-500 hover:bg-red-50/50 rounded-xl transition-all">
+        <button 
+          onClick={() => {
+            localStorage.removeItem("token");
+            window.location.href = "/auth";
+          }}
+          className="flex items-center gap-3 px-4 py-3 w-full text-slate-500 hover:text-red-500 hover:bg-red-50/50 rounded-xl transition-all"
+        >
           <LogOut size={20} />
           <span className="font-medium">Logout</span>
         </button>

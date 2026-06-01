@@ -22,13 +22,15 @@ function AppContent() {
   const [user, setUser] = useState<{ uid: string } | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Mock auth for now until Firebase is ready
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setLoading(false);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, []);
+    const token = localStorage.getItem("token");
+    if (token) {
+      setUser({ uid: "local-user" });
+    } else {
+      setUser(null);
+    }
+    setLoading(false);
+  }, [location.pathname]);
 
   if (loading) {
     return (
@@ -43,6 +45,14 @@ function AppContent() {
   }
 
   const isAuthPage = location.pathname === "/auth" || location.pathname === "/";
+
+  if (!isAuthPage && !user) {
+    return <Navigate to="/auth" replace />;
+  }
+
+  if (location.pathname === "/auth" && user) {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden">
